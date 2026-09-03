@@ -14,6 +14,7 @@ import urllib.request
 
 DEFAULT_BASE_URL = "http://192.168.1.14:5000/webapi"
 
+AUTH_API = "SYNO.API.Auth"
 SEARCH_API = "SYNO.Finder.FileIndexing.Search"
 FOLDER_API = "SYNO.Finder.FileIndexing.Folder"
 
@@ -81,9 +82,18 @@ class SessionExpired(DsmError):
     pass
 
 
+class SessionSourceMismatch(DsmError):
+    """A session created from another client IP was supplied to DSM."""
+
+
+class AuthenticationError(DsmError):
+    """DSM rejected a login attempt or did not return a usable session."""
+
+
 class FinderClient:
     def __init__(self, sid, base_url=DEFAULT_BASE_URL, urlopen=None,
-                 sleep=time.sleep, max_retries=5, timeout=300):
+                 sleep=time.sleep, max_retries=5, timeout=300,
+                 syno_token=None):
         if not sid:
             raise ValueError("a DSM _sid is required")
         self.sid = sid
@@ -92,6 +102,7 @@ class FinderClient:
         self._sleep = sleep
         self.max_retries = max_retries
         self.timeout = timeout
+        self.syno_token = syno_token
 
     @staticmethod
     def encode_params(params):
@@ -114,6 +125,8 @@ class FinderClient:
 
     def call(self, api, method, version, params=None):
         body = {"api": api, "method": method, "version": version, "_sid": self.sid}
+        if self.syno_token:
+            body["SynoToken"] = self.syno_token
         body.update(self.encode_params(params or {}))
         data = urllib.parse.urlencode(body).encode("utf-8")
         url = self.base_url + "/entry.cgi"
@@ -134,6 +147,8 @@ class FinderClient:
             code = (payload.get("error") or {}).get("code")
             if code in _SESSION_ERRORS:
                 raise SessionExpired(code, api, method)
+            if code == 150:
+                raise SessionSourceMismatch(code, api, method)
             # 400-series Finder codes are deterministic; retrying is pointless.
             raise DsmError(code, api, method)
 
@@ -159,3 +174,51 @@ class FinderClient:
         data = self.search(keyword, file_type=file_type, frm=0, size=1,
                            criteria_list=criteria_list)
         return int(data.get("total", 0))
+
+
+def login(account, password, base_url=DEFAULT_BASE_URL, otp_code=None,
+          session="nassearch", urlopen=None, timeout=300):
+    """Create a DSM session from the current machine.
+
+    DSM binds sessions to the source IP.  Calling this from the NAS avoids the
+    source-IP mismatch that occurs when a browser cookie from another computer
+    is passed to a process running on the NAS.  The caller owns ``password``;
+    this function neither logs nor stores it.
+    """
+    if not account:
+        raise ValueError("a DSM account is required")
+    if not password:
+        raise ValueError("a DSM password is required")
+
+    params = {
+        "api": AUTH_API,
+        "method": "login",
+        "version": 6,
+        "account": account,
+        "passwd": password,
+        "session": session,
+        "format": "sid",
+        "enable_syno_token": "yes",
+    }
+    if otp_code:
+        params["otp_code"] = otp_code
+
+    data = urllib.parse.urlencode(params).encode("utf-8")
+    url = base_url.rstrip("/") + "/entry.cgi"
+    opener = urlopen or urllib.request.urlopen
+    try:
+        with opener(url, data=data, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise AuthenticationError("transport: %s" % exc, AUTH_API, "login")
+
+    if not payload.get("success"):
+        code = (payload.get("error") or {}).get("code")
+        raise AuthenticationError(code, AUTH_API, "login")
+
+    response = payload.get("data") or {}
+    sid = response.get("sid")
+    if not sid:
+        raise AuthenticationError("missing sid", AUTH_API, "login")
+    return FinderClient(sid, base_url=base_url, urlopen=opener, timeout=timeout,
+                        syno_token=response.get("synotoken"))

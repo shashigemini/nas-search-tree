@@ -1,5 +1,7 @@
 import argparse
+import getpass
 import os
+import shlex
 import sys
 import time
 
@@ -8,23 +10,40 @@ from . import dedupe as dedupe_mod
 from . import link as link_mod
 from . import report as report_mod
 from . import verify as verify_mod
-from .api import FILE_TYPES, FinderClient, SessionExpired, DEFAULT_BASE_URL
+from .api import (FILE_TYPES, AuthenticationError, DsmError, FinderClient,
+                  SessionExpired, SessionSourceMismatch, DEFAULT_BASE_URL,
+                  login as dsm_login)
 from .runlog import RunLog
 
 
 def _client(args):
     sid = args.sid or os.environ.get("DSM_SID")
-    if not sid:
-        sys.exit("no session: pass --sid or set DSM_SID (copy the _sid cookie "
-                 "from a logged-in DSM tab)")
-    return FinderClient(sid, base_url=args.base_url)
+    if sid:
+        return FinderClient(sid, base_url=args.base_url,
+                            syno_token=args.syno_token or os.environ.get("DSM_SYNOTOKEN"))
+
+    account = args.account or os.environ.get("DSM_ACCOUNT")
+    if not account:
+        sys.exit("no session: pass --sid/set DSM_SID, or use --account to log in "
+                 "from this machine")
+    password = os.environ.get("DSM_PASSWORD")
+    if password is None:
+        password = getpass.getpass("DSM password for %s: " % account)
+    otp_code = args.otp_code or os.environ.get("DSM_OTP_CODE")
+    return dsm_login(account, password, base_url=args.base_url, otp_code=otp_code)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="nassearch")
-    parser.add_argument("--out", required=True, help="export directory")
+    parser.add_argument("--out", help="export directory")
     parser.add_argument("--keyword", default="gandhi")
     parser.add_argument("--sid", default=None)
+    parser.add_argument("--syno-token", default=None,
+                        help="DSM CSRF token returned alongside a SID")
+    parser.add_argument("--account", default=None,
+                        help="DSM account; password is prompted securely")
+    parser.add_argument("--otp-code", default=None,
+                        help="DSM two-factor authentication code, if required")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--cap", type=int, default=crawl_mod.DEFAULT_CAP)
     parser.add_argument("--page-size", type=int, default=200)
@@ -34,8 +53,22 @@ def main(argv=None):
                         choices=FILE_TYPES, default=None)
     parser.add_argument("--quiet", action="store_true",
                         help="write only to _meta/run.log, not to stdout")
-    parser.add_argument("stage", choices=["crawl", "merge", "dedupe", "link", "verify", "all"])
+    parser.add_argument("--shell", action="store_true",
+                        help="with login, print safe shell exports for the new session")
+    parser.add_argument("stage", choices=["login", "crawl", "merge", "dedupe", "link", "verify", "all"])
     args = parser.parse_args(argv)
+
+    if args.stage != "login" and not args.out:
+        parser.error("--out is required unless stage is login")
+    if args.stage == "login":
+        client = _client(args)
+        if args.shell:
+            print("export DSM_SID=%s" % shlex.quote(client.sid))
+            if client.syno_token:
+                print("export DSM_SYNOTOKEN=%s" % shlex.quote(client.syno_token))
+        else:
+            print("DSM login succeeded. Re-run with --shell to export this session.")
+        return 0
 
     os.makedirs(os.path.join(args.out, "_meta"), exist_ok=True)
     log = RunLog(args.out, echo=not args.quiet)
@@ -65,6 +98,13 @@ def main(argv=None):
     except SessionExpired:
         log("DSM session expired -- grab a fresh _sid and re-run "
             "(the crawl resumes where it stopped)")
+        return 2
+    except SessionSourceMismatch:
+        log("DSM session belongs to a different source IP -- use --account to "
+            "log in from this machine, then re-run")
+        return 2
+    except (AuthenticationError, DsmError) as exc:
+        log("DSM API failed: %s" % exc)
         return 2
 
     log("report: %s" % report_mod.write_report(args.out, counts))

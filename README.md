@@ -25,12 +25,23 @@ Everything runs on the NAS. Deploy with:
     rsync -a --delete --exclude .venv --exclude __pycache__ \
       ~/nas-search-tree/ nosh@192.168.1.14:~/.nas-search-tree/
 
-Get a session: log into DSM in a browser, copy the `_sid` cookie, then
+The preferred method is a **local DSM login**. It creates the session from the
+NAS itself, so it avoids DSM's source-IP binding and never writes your password
+to disk:
 
     ssh nosh@192.168.1.14
     cd ~/.nas-search-tree
-    export DSM_SID='<paste>'
-    python3 -m nassearch all --keyword gandhi --out ~/search-exports/gandhi
+    python3 -m nassearch all --account nosh --keyword gandhi --out ~/search-exports/gandhi
+
+The command securely prompts for the DSM password. If DSM two-factor
+authentication is enabled, add `--otp-code 123456`. Existing `DSM_SID` / `--sid`
+usage remains supported, but a browser SID from another computer cannot be used
+by a process running on the NAS because DSM binds it to the request source IP.
+
+For a detached job, obtain a NAS-local session and export it in the same shell:
+
+    eval "$(python3 -m nassearch login --account nosh --shell)"
+    nohup python3 -m nassearch all --keyword gandhi --out ~/search-exports/gandhi --quiet >/dev/null 2>&1 &
 
 `all` runs every stage in order: **crawl → merge → dedupe → link → verify**.
 Stages also run individually if you want to redo just one of them.

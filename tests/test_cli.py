@@ -65,3 +65,27 @@ def test_a_crawl_without_a_session_stops_before_doing_anything(tmp_path, monkeyp
     monkeypatch.delenv("DSM_SID", raising=False)
     with pytest.raises(SystemExit):
         cli.main(["crawl", "--out", str(tmp_path / "out")])
+
+
+def test_login_uses_account_prompt_and_can_emit_shell_exports(monkeypatch, capsys):
+    class Client:
+        sid = "LOCAL SID"
+        syno_token = "TOKEN"
+
+    captured = {}
+
+    def fake_login(account, password, **kwargs):
+        captured.update(account=account, password=password, **kwargs)
+        return Client()
+
+    monkeypatch.delenv("DSM_SID", raising=False)
+    monkeypatch.delenv("DSM_PASSWORD", raising=False)
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: "secret")
+    monkeypatch.setattr(cli, "dsm_login", fake_login)
+
+    assert cli.main(["login", "--account", "nosh", "--shell"]) == 0
+    assert captured == {"account": "nosh", "password": "secret",
+                        "base_url": cli.DEFAULT_BASE_URL, "otp_code": None}
+    output = capsys.readouterr().out
+    assert "export DSM_SID='LOCAL SID'" in output
+    assert "export DSM_SYNOTOKEN=TOKEN" in output

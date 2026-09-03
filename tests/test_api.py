@@ -3,8 +3,9 @@ import json
 
 import pytest
 
-from nassearch.api import (DsmError, FinderClient, SessionExpired,
-                           construct_keyword, escape_lucene)
+from nassearch.api import (AuthenticationError, DsmError, FinderClient,
+                           SessionExpired, SessionSourceMismatch,
+                           construct_keyword, escape_lucene, login)
 
 
 class _Response(io.BytesIO):
@@ -74,6 +75,12 @@ def test_expired_session_is_distinguishable_from_other_failures():
     assert not isinstance(caught.value, SessionExpired)
 
 
+def test_source_ip_mismatch_is_distinguishable_from_an_expired_session():
+    client, _ = _client([{"success": False, "error": {"code": 150}}])
+    with pytest.raises(SessionSourceMismatch):
+        client.search("gandhi")
+
+
 def test_transport_failure_is_retried_then_surfaced():
     attempts = []
 
@@ -91,6 +98,34 @@ def test_total_probes_with_a_single_hit():
     client, sent = _client([{"success": True, "data": {"total": 56340, "hits": []}}])
     assert client.total("gandhi", "document") == 56340
     assert _params(sent[0][1])["size"] == "1"
+
+
+def test_login_creates_a_client_bound_to_the_local_request_and_keeps_token():
+    sent = []
+
+    def urlopen(url, data=None, timeout=None):
+        sent.append((url, data))
+        return _Response(json.dumps({"success": True, "data": {
+            "sid": "LOCAL_SID", "synotoken": "TOKEN"}}).encode())
+
+    client = login("nosh", "not-logged", otp_code="123456", urlopen=urlopen)
+    params = _params(sent[0][1])
+    assert sent[0][0].endswith("/entry.cgi")
+    assert params == {
+        "api": "SYNO.API.Auth", "method": "login", "version": "6",
+        "account": "nosh", "passwd": "not-logged", "session": "nassearch",
+        "format": "sid", "enable_syno_token": "yes", "otp_code": "123456"}
+    assert client.sid == "LOCAL_SID"
+    assert client.syno_token == "TOKEN"
+
+
+def test_login_rejection_has_a_specific_error_type():
+    def urlopen(url, data=None, timeout=None):
+        return _Response(json.dumps({"success": False, "error": {"code": 403}}).encode())
+
+    with pytest.raises(AuthenticationError) as caught:
+        login("nosh", "bad", urlopen=urlopen)
+    assert caught.value.code == 403
 
 
 def test_lucene_escaping_covers_range_and_grouping_syntax():
