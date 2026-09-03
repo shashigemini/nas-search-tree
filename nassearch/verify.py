@@ -50,6 +50,14 @@ def verify(out_dir, log=print):
             problems.append("%s has %d entries absent from all/, e.g. %s"
                             % (category, len(stray), sorted(stray)[0]))
 
+    skipped_path = os.path.join(meta, "skipped.txt")
+    if os.path.exists(skipped_path):
+        with open(skipped_path) as fh:
+            skipped = [line for line in fh if line.strip()]
+        if skipped:
+            problems.append("%d file(s) could not be read and are absent from "
+                            "the tree; see _meta/skipped.txt" % len(skipped))
+
     state_path = os.path.join(meta, "slices.json")
     if os.path.exists(state_path):
         with open(state_path) as fh:

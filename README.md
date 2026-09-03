@@ -68,6 +68,8 @@ expired (re-export `DSM_SID` and re-run — the crawl resumes).
         hits.jsonl       one line per unique matched path
         manifest.jsonl   one line per unique content hash (the canonical set)
         duplicates.tsv   content hash -> every redundant copy
+        skipped.txt      files that matched but could not be read
+        run.log          timestamped progress, appended across runs
         report.md        totals to compare against the DSM sidebar
 
 Categories are facets, not partitions: `all/` ⊇ each typed directory, and the
@@ -77,6 +79,15 @@ linked under `documents/` — the tree is a view, not a move.
 Link names are the flattened path relative to `/volume1`
 (`MEHERBABA__Archive__Talks__Gandhi.doc`). Names over the 255-byte filesystem
 limit keep their head and tail and gain a hash of the full path.
+
+## Privileges
+
+No sudo, and no root-only interfaces. The search index (`synoelasticd`,
+`fileindexd`) is readable only by root, so the tool goes through the HTTP
+WebAPI as a logged-in DSM user instead — you see exactly what that account can
+see. Hashing needs ordinary read permission on the matched files; anything it
+cannot read is written to `_meta/skipped.txt` and makes `verify` fail, so an
+incomplete export is never mistaken for a complete one.
 
 ## Tests
 

@@ -44,6 +44,21 @@ def write_report(out_dir, counts=None):
                   "- reduction: %.1f%%" % (100.0 * dupes / total if total else 0.0),
                   ""]
 
+    skipped_path = os.path.join(meta, "skipped.txt")
+    if os.path.exists(skipped_path):
+        with open(skipped_path) as fh:
+            skipped = [line.split("\t") for line in fh.read().splitlines() if line]
+        if skipped:
+            lines += ["## Skipped", "",
+                      "**%d file(s) matched the search but are absent from the "
+                      "tree** because they could not be read "
+                      "(%d missing, %d unreadable). Full list in "
+                      "`_meta/skipped.txt`." % (
+                          len(skipped),
+                          sum(1 for s_ in skipped if s_[0] == "missing"),
+                          sum(1 for s_ in skipped if s_[0] == "unreadable")),
+                      ""]
+
     if counts:
         lines += ["## Tree", "", "| directory | links |", "|---|---|"]
         lines += ["| %s | %d |" % (name, n) for name, n in counts.items()]

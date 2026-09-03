@@ -151,3 +151,45 @@ def test_stale_index_sizes_are_re_stated_from_the_filesystem(tmp_path):
 
     dedupe.dedupe(str(tmp_path), workers=2, log=lambda *a: None)
     assert _manifest(tmp_path)[0]["size"] == 999
+
+
+def test_unreadable_files_are_reported_rather_than_silently_dropped(tmp_path):
+    """Permission-denied is the failure mode of running without sudo, and it
+    must never leave an export that merely looks complete."""
+    root = str(tmp_path / "vol")
+    payload = b"same size" * 100
+    readable = _write(root, "ok.doc", payload)
+    denied = _write(root, "denied.doc", payload)  # same size -> must be hashed
+    os.chmod(denied, 0o000)
+    _hits(tmp_path, [_record(readable), _record(denied)])
+
+    try:
+        stats = dedupe.dedupe(str(tmp_path), workers=2, log=lambda *a: None)
+    finally:
+        os.chmod(denied, 0o644)
+
+    assert stats["unreadable"] == [denied]
+    assert [e["canonical_path"] for e in _manifest(tmp_path)] == [readable]
+
+    with open(tmp_path / "_meta" / "skipped.txt") as fh:
+        rows = [line.split("\t") for line in fh.read().splitlines()]
+    assert ["unreadable", denied] in rows
+
+
+def test_skipped_files_make_verify_fail(tmp_path):
+    from nassearch import link, verify
+
+    root = str(tmp_path / "vol")
+    payload = b"same size" * 100
+    readable = _write(root, "ok.doc", payload)
+    denied = _write(root, "denied.doc", payload)
+    os.chmod(denied, 0o000)
+    _hits(tmp_path, [_record(readable), _record(denied)])
+    try:
+        dedupe.dedupe(str(tmp_path), workers=2, log=lambda *a: None)
+    finally:
+        os.chmod(denied, 0o644)
+    link.build(str(tmp_path), root=root, log=lambda *a: None)
+
+    problems = verify.verify(str(tmp_path), log=lambda *a: None)
+    assert any("could not be read" in p for p in problems)

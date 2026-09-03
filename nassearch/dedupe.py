@@ -49,8 +49,13 @@ def full_hash(path, size=None):
     return _digest(path, [(0, None)])
 
 
-def _group_by(records, keyfn, workers, compute=None):
-    """Bucket records by a key, computing it in parallel when it costs I/O."""
+def _group_by(records, keyfn, workers, compute=None, failures=None):
+    """Bucket records by a key, computing it in parallel when it costs I/O.
+
+    A record whose key could not be computed -- an unreadable file, typically --
+    is collected in `failures` rather than dropped. Losing a file silently would
+    leave an export that looks healthy while being incomplete.
+    """
     groups = {}
     if compute is None:
         for record in records:
@@ -59,7 +64,9 @@ def _group_by(records, keyfn, workers, compute=None):
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for record, key in zip(records, pool.map(compute, records)):
             if key is None:
-                continue  # unreadable/vanished; reported by the caller
+                if failures is not None:
+                    failures.append(record["path"])
+                continue
             groups.setdefault(key, []).append(record)
     return groups
 
@@ -114,7 +121,9 @@ def dedupe(out_dir, workers=4, log=print):
         finally:
             quick_progress.advance(min(record["size"], 2 * CHUNK))
 
-    by_quick = _group_by(contested, None, workers, compute=_quick)
+    unreadable = []
+    by_quick = _group_by(contested, None, workers, compute=_quick,
+                         failures=unreadable)
     quick_unique = [g[0] for g in by_quick.values() if len(g) == 1]
     suspects = [r for g in by_quick.values() if len(g) > 1 for r in g]
     log("tier 2 (quick key): %d resolved, %d need a full hash"
@@ -130,7 +139,8 @@ def dedupe(out_dir, workers=4, log=print):
         finally:
             full_progress.advance(record["size"])
 
-    by_hash = _group_by(suspects, None, workers, compute=_full)
+    by_hash = _group_by(suspects, None, workers, compute=_full,
+                        failures=unreadable)
     log("tier 3 (full hash): %d distinct contents among %d suspects"
         % (len(by_hash), len(suspects)))
 
@@ -185,7 +195,19 @@ def dedupe(out_dir, workers=4, log=print):
         for content_hash, path in sorted(duplicates):
             fh.write("%s\t%s\n" % (content_hash, path))
 
+    skipped = missing + unreadable
+    with open(os.path.join(meta, "skipped.txt"), "w") as fh:
+        for path in sorted(missing):
+            fh.write("missing\t%s\n" % path)
+        for path in sorted(unreadable):
+            fh.write("unreadable\t%s\n" % path)
+
     log("manifest: %d unique entries, %d redundant copies"
         % (len(entries), len(duplicates)))
+    if skipped:
+        log("!! %d file(s) could not be read and are ABSENT from the tree "
+            "(%d missing, %d unreadable) -- see _meta/skipped.txt"
+            % (len(skipped), len(missing), len(unreadable)))
     return {"entries": len(entries), "duplicates": len(duplicates),
-            "missing": missing, "files": len(files), "dirs": len(dirs)}
+            "missing": missing, "unreadable": unreadable,
+            "files": len(files), "dirs": len(dirs)}
