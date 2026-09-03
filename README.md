@@ -32,9 +32,28 @@ Get a session: log into DSM in a browser, copy the `_sid` cookie, then
     export DSM_SID='<paste>'
     python3 -m nassearch all --keyword gandhi --out ~/search-exports/gandhi
 
-Stages also run individually (`crawl`, `merge`, `dedupe`, `link`, `verify`).
+`all` runs every stage in order: **crawl → merge → dedupe → link → verify**.
+Stages also run individually if you want to redo just one of them.
+
 `crawl` is resumable — if the session expires, paste a fresh `_sid` and re-run;
 it picks up at the page it stopped on.
+
+## Running it as a job
+
+Every stage writes to `<out>/_meta/run.log` (timestamped, line-buffered,
+appended across runs) as well as to stdout, so a detached run stays visible:
+
+    nohup python3 -m nassearch all --keyword gandhi \
+      --out ~/search-exports/gandhi --quiet >/dev/null 2>&1 &
+
+    tail -f ~/search-exports/gandhi/_meta/run.log
+
+`--quiet` suppresses the stdout copy and logs only to the file. The two passes
+that read real bytes (quick key, full hash) emit a heartbeat with a percentage,
+GiB read, rate and ETA, so a long-running job never looks like a hang.
+
+Exit codes: `0` success, `1` verification found a problem, `2` the DSM session
+expired (re-export `DSM_SID` and re-run — the crawl resumes).
 
 ## What you get
 

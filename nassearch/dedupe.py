@@ -15,6 +15,8 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 
+from .runlog import Progress
+
 CHUNK = 1 << 20  # 1 MiB
 READ_BLOCK = 1 << 20
 
@@ -101,12 +103,16 @@ def dedupe(out_dir, workers=4, log=print):
     log("tier 1 (size): %d unique with zero bytes read, %d to inspect"
         % (len(unique_size), len(contested)))
 
+    quick_progress = Progress(log, "quick key", len(contested))
+
     def _quick(record):
         try:
             return "quick:%d:%s" % (record["size"],
                                     quick_key(record["path"], record["size"]))
         except OSError:
             return None
+        finally:
+            quick_progress.advance(min(record["size"], 2 * CHUNK))
 
     by_quick = _group_by(contested, None, workers, compute=_quick)
     quick_unique = [g[0] for g in by_quick.values() if len(g) == 1]
@@ -114,11 +120,15 @@ def dedupe(out_dir, workers=4, log=print):
     log("tier 2 (quick key): %d resolved, %d need a full hash"
         % (len(quick_unique), len(suspects)))
 
+    full_progress = Progress(log, "full hash", len(suspects))
+
     def _full(record):
         try:
             return full_hash(record["path"])
         except OSError:
             return None
+        finally:
+            full_progress.advance(record["size"])
 
     by_hash = _group_by(suspects, None, workers, compute=_full)
     log("tier 3 (full hash): %d distinct contents among %d suspects"
